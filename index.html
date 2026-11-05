@@ -45,6 +45,45 @@
       .sub {
         color: var(--mut);
       }
+      #login {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: var(--bg);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+      }
+      #login.show {
+        display: flex;
+      }
+      #login form {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 26px;
+        width: 100%;
+        max-width: 360px;
+        display: grid;
+        gap: 12px;
+      }
+      #login h2 {
+        margin: 0 0 2px;
+        font-size: 20px;
+      }
+      #login input {
+        font: inherit;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        width: 100%;
+      }
+      #login .lerr {
+        color: var(--err);
+        font-size: 13px;
+        min-height: 1.2em;
+      }
       .sync {
         display: inline-block;
         margin-left: 8px;
@@ -831,6 +870,32 @@
     </style>
   </head>
   <body>
+    <div id="login">
+      <form id="loginForm" autocomplete="on">
+        <h2>Registrasi Peserta</h2>
+        <div class="sub">Masuk untuk melihat data peserta.</div>
+        <input
+          id="lEmail"
+          type="email"
+          placeholder="Email"
+          autocomplete="username"
+          required />
+        <input
+          id="lPass"
+          type="password"
+          placeholder="Password"
+          autocomplete="current-password"
+          required />
+        <div class="lerr" id="lErr"></div>
+        <button
+          class="pri"
+          id="lBtn"
+          type="submit"
+          style="justify-content: center">
+          Masuk
+        </button>
+      </form>
+    </div>
     <div class="wrap">
       <div class="top">
         <div>
@@ -852,11 +917,16 @@
             </summary>
             <div class="menu-box">
               <button data-m="impcsv">Import peserta (CSV)</button>
+              <button data-m="expxlsx">Export hasil (Excel .xlsx)</button>
               <button data-m="expcsv">Export hasil (CSV)</button>
               <hr />
               <button data-m="backup">Backup data (.json)</button>
               <button data-m="restore">Restore backup (.json)</button>
               <hr />
+              <button data-m="logout" id="mLogout" style="display: none">
+                Keluar (logout)
+              </button>
+              <hr id="hrLogout" style="display: none" />
               <button data-m="reset" style="color: var(--err)">
                 Hapus semua data
               </button>
@@ -1203,12 +1273,16 @@
         appId: "1:182816281141:web:d194204585543f5ef2d77c",
       };
       const FB_VER = "11.10.0";
+      // false = tanpa login (acara 1 hari). Ubah ke true untuk mewajibkan login email/password.
+      const REQUIRE_LOGIN = false;
       const req = (r) =>
         new Promise((ok, no) => {
           r.onsuccess = () => ok(r.result);
           r.onerror = () => no(r.error);
         });
-      let F = null, // modul firebase-firestore
+      let auth = null,
+        AUTH = null, // modul firebase-auth
+        F = null, // modul firebase-firestore
         col = null; // koleksi "peserta"
       function setSync(cls, text) {
         const el = $("#sync");
@@ -1236,12 +1310,17 @@
         }
         try {
           const base = `https://www.gstatic.com/firebasejs/${FB_VER}/`;
-          const [A, FS] = await Promise.all([
+          const [A, FS, AU] = await Promise.all([
             import(base + "firebase-app.js"),
             import(base + "firebase-firestore.js"),
+            REQUIRE_LOGIN ? import(base + "firebase-auth.js") : null,
           ]);
           F = FS;
           const app = A.initializeApp(FIREBASE_CONFIG);
+          if (REQUIRE_LOGIN) {
+            auth = AU.getAuth(app);
+            AUTH = AU;
+          }
           const fdb = F.initializeFirestore(app, {
             ignoreUndefinedProperties: true,
             localCache: F.persistentLocalCache({
@@ -1249,40 +1328,24 @@
             }),
           });
           col = F.collection(fdb, "peserta");
+          if (!REQUIRE_LOGIN) return await new Promise((ok) => listen(ok));
+          // tunggu login; data baru dibaca setelah ada pengguna yang masuk
           return await new Promise((ok) => {
-            let first = true;
-            F.onSnapshot(
-              col,
-              { includeMetadataChanges: true },
-              (snap) => {
-                rows = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
-                const m = snap.metadata;
-                if (m.hasPendingWrites) setSync("wait", "Menunggu sinkron…");
-                else if (m.fromCache)
-                  setSync(
-                    "off",
-                    navigator.onLine
-                      ? "Menyambung…"
-                      : "Offline — tersimpan di laptop ini",
-                  );
-                else setSync("ok", "Tersinkron");
-                if (first) {
-                  first = false;
-                  ok(rows);
-                } else render();
-              },
-              (err) => {
-                setSync("off", "Gagal sinkron");
-                toast(
-                  "Gagal membaca Firebase: " + (err.code || err.message),
-                  7000,
-                );
-                if (first) {
-                  first = false;
-                  col = null;
-                  ok([]);
+            let started = false;
+            AU.onAuthStateChanged(
+              auth,
+              (user) => {
+                if (!user) {
+                  setSync("off", "Belum login");
+                  $("#login").classList.add("show");
+                  return;
                 }
+                $("#login").classList.remove("show");
+                if (started) return;
+                started = true;
+                listen(ok);
               },
+              () => {},
             );
           });
         } catch (e) {
@@ -1295,6 +1358,38 @@
           );
           return [];
         }
+      }
+      function listen(ok) {
+        let first = true;
+        F.onSnapshot(
+          col,
+          { includeMetadataChanges: true },
+          (snap) => {
+            rows = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+            const m = snap.metadata;
+            if (m.hasPendingWrites) setSync("wait", "Menunggu sinkron…");
+            else if (m.fromCache)
+              setSync(
+                "off",
+                navigator.onLine
+                  ? "Menyambung…"
+                  : "Offline — tersimpan di laptop ini",
+              );
+            else setSync("ok", "Tersinkron");
+            if (first) {
+              first = false;
+              ok(rows);
+            } else render();
+          },
+          (err) => {
+            setSync("off", "Gagal sinkron");
+            toast("Gagal membaca Firebase: " + (err.code || err.message), 7000);
+            if (first) {
+              first = false;
+              ok([]);
+            }
+          },
+        );
       }
       async function dbDel(id) {
         if (col) F.deleteDoc(F.doc(col, id)).catch(wErr);
@@ -1324,6 +1419,37 @@
           return false;
         }
       }
+      if (REQUIRE_LOGIN) {
+        $("#mLogout").style.display = "";
+        $("#hrLogout").style.display = "";
+      }
+      $("#loginForm").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const btn = $("#lBtn");
+        btn.disabled = true;
+        $("#lErr").textContent = "";
+        try {
+          await AUTH.signInWithEmailAndPassword(
+            auth,
+            $("#lEmail").value.trim(),
+            $("#lPass").value,
+          );
+          $("#lPass").value = "";
+        } catch (err) {
+          const c = err.code || "";
+          $("#lErr").textContent =
+            /invalid-credential|wrong-password|user-not-found|invalid-email/.test(
+              c,
+            )
+              ? "Email atau password salah."
+              : /network/.test(c)
+                ? "Tidak ada internet. Login pertama kali butuh internet."
+                : /too-many/.test(c)
+                  ? "Terlalu banyak percobaan. Coba lagi beberapa menit lagi."
+                  : "Gagal masuk: " + (c || err.message);
+        }
+        btn.disabled = false;
+      });
       // Pindahkan data lama (IndexedDB di browser ini) ke Firestore, sekali saja
       async function migrateLocal() {
         if (!col || !indexedDB.databases) return;
@@ -2122,6 +2248,207 @@
             : "");
         if (add) fx(true, add + " peserta diimpor", "");
       });
+      /* ================= export Excel (.xlsx) — gaya sama dengan contoh: Arial 11, header di tengah ================= */
+      const crcT = (() => {
+        const t = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++)
+            c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+          t[n] = c >>> 0;
+        }
+        return t;
+      })();
+      const crc32 = (u) => {
+        let c = 0xffffffff;
+        for (let i = 0; i < u.length; i++)
+          c = crcT[(c ^ u[i]) & 255] ^ (c >>> 8);
+        return (c ^ 0xffffffff) >>> 0;
+      };
+      function zipStore(files) {
+        // files: [[nama, string]] -> Uint8Array (.zip tanpa kompresi, cukup untuk .xlsx)
+        const enc = new TextEncoder(),
+          parts = [],
+          cen = [];
+        let off = 0;
+        const d = new Date(),
+          dt =
+            ((d.getHours() << 11) |
+              (d.getMinutes() << 5) |
+              (d.getSeconds() >> 1)) &
+            0xffff,
+          dd =
+            (((d.getFullYear() - 1980) << 9) |
+              ((d.getMonth() + 1) << 5) |
+              d.getDate()) &
+            0xffff;
+        for (const [name, str] of files) {
+          const nb = enc.encode(name),
+            data = enc.encode(str),
+            crc = crc32(data);
+          const lh = new DataView(new ArrayBuffer(30));
+          lh.setUint32(0, 0x04034b50, true);
+          lh.setUint16(4, 20, true);
+          lh.setUint16(6, 0x0800, true);
+          lh.setUint16(8, 0, true);
+          lh.setUint16(10, dt, true);
+          lh.setUint16(12, dd, true);
+          lh.setUint32(14, crc, true);
+          lh.setUint32(18, data.length, true);
+          lh.setUint32(22, data.length, true);
+          lh.setUint16(26, nb.length, true);
+          lh.setUint16(28, 0, true);
+          parts.push(new Uint8Array(lh.buffer), nb, data);
+          const ch = new DataView(new ArrayBuffer(46));
+          ch.setUint32(0, 0x02014b50, true);
+          ch.setUint16(4, 20, true);
+          ch.setUint16(6, 20, true);
+          ch.setUint16(8, 0x0800, true);
+          ch.setUint16(10, 0, true);
+          ch.setUint16(12, dt, true);
+          ch.setUint16(14, dd, true);
+          ch.setUint32(16, crc, true);
+          ch.setUint32(20, data.length, true);
+          ch.setUint32(24, data.length, true);
+          ch.setUint16(28, nb.length, true);
+          ch.setUint32(42, off, true);
+          cen.push(new Uint8Array(ch.buffer), nb);
+          off += 30 + nb.length + data.length;
+        }
+        const cenLen = cen.reduce((a, x) => a + x.length, 0);
+        const end = new DataView(new ArrayBuffer(22));
+        end.setUint32(0, 0x06054b50, true);
+        end.setUint16(8, files.length, true);
+        end.setUint16(10, files.length, true);
+        end.setUint32(12, cenLen, true);
+        end.setUint32(16, off, true);
+        const all = [...parts, ...cen, new Uint8Array(end.buffer)];
+        const out = new Uint8Array(all.reduce((a, x) => a + x.length, 0));
+        let p = 0;
+        for (const x of all) {
+          out.set(x, p);
+          p += x.length;
+        }
+        return out;
+      }
+      function exportXLSX() {
+        const xe = (v) =>
+          String(v ?? "")
+            .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+        const col = (i) => String.fromCharCode(65 + i);
+        const HEAD = [
+          ["NO", 5],
+          ["NAMA", 32],
+          ["NO KTP", 20],
+          ["NO GOPAY / OVO", 17],
+          ["VALIDASI NOMOR", 19],
+          ["UKURAN JAKET", 14],
+          ["CHECK-IN JAKET", 18],
+          ["CHECK-IN T-SHIRT", 18],
+          ["CHECK-OUT 1 JAKET KEMBALI", 20],
+          ["CHECK-OUT 1 AKTIVASI SMARTFREN", 22],
+          ["CHECK-OUT 1 GOPAY / OVO", 20],
+          ["CHECK-OUT 2 GOODIE BAG", 20],
+          ["CATATAN", 30],
+        ];
+        const st = (r, f) =>
+          (f === "jaket" || f === "jaketback") && noJ(r)
+            ? "Tidak berlaku"
+            : r[f + "_at"]
+              ? "Sudah (" + hhmm(r[f + "_at"]) + ")"
+              : "Belum";
+        const data = [...rows]
+          .sort((a, b) => a.nama.localeCompare(b.nama, "id"))
+          .map((r, i) => [
+            i + 1,
+            r.nama,
+            r.ktp || "-",
+            r.gopay || "-",
+            r.validasi === "ok"
+              ? "Valid"
+              : r.validasi === "gagal"
+                ? "Tidak valid"
+                : r.gopay
+                  ? "Belum divalidasi"
+                  : "Tidak ada nomor",
+            r.ukuran === "-" ? "Tanpa jaket" : r.ukuran || "Belum dipilih",
+            st(r, "jaket"),
+            st(r, "tshirt"),
+            st(r, "jaketback"),
+            st(r, "smartfren"),
+            st(r, "gopay"),
+            st(r, "goodiebag"),
+            r.catatan || "-",
+          ]);
+        const cell = (v, ci, ri, s) =>
+          typeof v === "number"
+            ? `<c r="${col(ci)}${ri}" s="${s}"><v>${v}</v></c>`
+            : `<c r="${col(ci)}${ri}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xe(v)}</t></is></c>`;
+        const sheet =
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+          '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+          '<sheetFormatPr defaultRowHeight="15"/><cols>' +
+          HEAD.map(
+            (h, i) =>
+              `<col min="${i + 1}" max="${i + 1}" width="${h[1]}" customWidth="1"/>`,
+          ).join("") +
+          "</cols><sheetData>" +
+          `<row r="1" ht="32" customHeight="1">${HEAD.map((h, i) => cell(h[0], i, 1, 1)).join("")}</row>` +
+          data
+            .map(
+              (row, ri) =>
+                `<row r="${ri + 2}">${row.map((v, ci) => cell(v, ci, ri + 2, 2)).join("")}</row>`,
+            )
+            .join("") +
+          "</sheetData></worksheet>";
+        const styles =
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+          '<fonts count="1"><font><sz val="11"/><name val="Arial"/><family val="2"/></font></fonts>' +
+          '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
+          '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+          '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+          '<cellXfs count="3">' +
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center"/></xf>' +
+          '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+        const X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+        const zip = zipStore([
+          [
+            "[Content_Types].xml",
+            X +
+              '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
+          ],
+          [
+            "_rels/.rels",
+            X +
+              '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+          ],
+          [
+            "xl/workbook.xml",
+            X +
+              '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Registrasi" sheetId="1" r:id="rId1"/></sheets></workbook>',
+          ],
+          [
+            "xl/_rels/workbook.xml.rels",
+            X +
+              '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
+          ],
+          ["xl/styles.xml", styles],
+          ["xl/worksheets/sheet1.xml", sheet],
+        ]);
+        dl(
+          `registrasi-peserta-${fileStamp()}.xlsx`,
+          zip,
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        );
+        toast("File Excel diunduh (" + data.length + " peserta).");
+      }
       function exportCSV() {
         const q2 = (v) => '"' + String(v ?? "").replace(/"/g, '""') + '"',
           t = (v) => (v ? stamp(v) : "");
@@ -2216,6 +2543,7 @@
           $("#impRes").textContent = "";
           $("#dlgImp").showModal();
         }
+        if (m === "expxlsx") exportXLSX();
         if (m === "expcsv") exportCSV();
         if (m === "backup") {
           dl(
@@ -2226,6 +2554,19 @@
           toast("Backup diunduh.");
         }
         if (m === "restore") $("#fJson").click();
+        if (m === "logout") {
+          if (!auth) return toast("Belum login.");
+          if (
+            !(await ask(
+              "Keluar?",
+              "Setelah keluar, perlu login lagi (butuh internet).",
+              "Ya, keluar",
+            ))
+          )
+            return;
+          await AUTH.signOut(auth);
+          location.reload();
+        }
         if (m === "reset") {
           if (!rows.length) return toast("Belum ada data.");
           if (
