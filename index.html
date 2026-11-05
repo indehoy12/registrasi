@@ -45,6 +45,23 @@
       .sub {
         color: var(--mut);
       }
+      .sync {
+        display: inline-block;
+        margin-left: 8px;
+        padding: 1px 9px;
+        border-radius: 99px;
+        font-size: 12px;
+        border: 1px solid currentColor;
+      }
+      .sync.ok {
+        color: var(--ok);
+      }
+      .sync.wait {
+        color: #b45309;
+      }
+      .sync.off {
+        color: var(--err);
+      }
       .top {
         display: flex;
         flex-wrap: wrap;
@@ -819,7 +836,8 @@
         <div>
           <h1>Registrasi Peserta</h1>
           <div class="sub" id="evName">
-            Data tersimpan otomatis di browser ini
+            Data tersinkron otomatis antar laptop
+            <span class="sync wait" id="sync">Memuat…</span>
           </div>
         </div>
         <div class="row">
@@ -1175,57 +1193,179 @@
         db = null,
         memId = 0;
 
-      /* ================= penyimpanan (IndexedDB, fallback memori) ================= */
+      /* ================= penyimpanan (Firebase Firestore: sinkron antar laptop + offline) ================= */
+      const FIREBASE_CONFIG = {
+        apiKey: "AIzaSyBehagIymITQhSEDXD7QXlISfeeBsJfszk",
+        authDomain: "registrasi-event-3e987.firebaseapp.com",
+        projectId: "registrasi-event-3e987",
+        storageBucket: "registrasi-event-3e987.firebasestorage.app",
+        messagingSenderId: "182816281141",
+        appId: "1:182816281141:web:d194204585543f5ef2d77c",
+      };
+      const FB_VER = "11.10.0";
       const req = (r) =>
         new Promise((ok, no) => {
           r.onsuccess = () => ok(r.result);
           r.onerror = () => no(r.error);
         });
-      const store = (m) => db.transaction("peserta", m).objectStore("peserta");
+      let F = null, // modul firebase-firestore
+        col = null; // koleksi "peserta"
+      function setSync(cls, text) {
+        const el = $("#sync");
+        if (!el) return;
+        el.className = "sync " + cls;
+        el.textContent = text;
+      }
+      window.addEventListener("online", () => setSync("wait", "Menyambung…"));
+      window.addEventListener("offline", () =>
+        setSync("off", "Offline — tersimpan di laptop ini"),
+      );
+      const wErr = (e) =>
+        toast("Gagal menyimpan ke cloud: " + (e.code || e.message), 6000);
       async function dbInit() {
-        try {
-          db = await new Promise((ok, no) => {
-            const r = indexedDB.open("registrasi-peserta", 1);
-            r.onupgradeneeded = () =>
-              r.result.createObjectStore("peserta", {
-                keyPath: "id",
-                autoIncrement: true,
-              });
-            r.onsuccess = () => ok(r.result);
-            r.onerror = () => no(r.error);
-          });
-          navigator.storage?.persist?.();
-          return await req(store("readonly").getAll());
-        } catch (e) {
-          db = null;
+        if (
+          !FIREBASE_CONFIG.apiKey ||
+          FIREBASE_CONFIG.apiKey.startsWith("ISI")
+        ) {
+          setSync("off", "Firebase belum diatur");
           toast(
-            "Penyimpanan browser tidak tersedia — data akan hilang saat halaman ditutup!",
-            6000,
+            "Firebase belum diatur — data hanya di memori & hilang saat ditutup!",
+            7000,
+          );
+          return [];
+        }
+        try {
+          const base = `https://www.gstatic.com/firebasejs/${FB_VER}/`;
+          const [A, FS] = await Promise.all([
+            import(base + "firebase-app.js"),
+            import(base + "firebase-firestore.js"),
+          ]);
+          F = FS;
+          const app = A.initializeApp(FIREBASE_CONFIG);
+          const fdb = F.initializeFirestore(app, {
+            ignoreUndefinedProperties: true,
+            localCache: F.persistentLocalCache({
+              tabManager: F.persistentMultipleTabManager(),
+            }),
+          });
+          col = F.collection(fdb, "peserta");
+          return await new Promise((ok) => {
+            let first = true;
+            F.onSnapshot(
+              col,
+              { includeMetadataChanges: true },
+              (snap) => {
+                rows = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+                const m = snap.metadata;
+                if (m.hasPendingWrites) setSync("wait", "Menunggu sinkron…");
+                else if (m.fromCache)
+                  setSync(
+                    "off",
+                    navigator.onLine
+                      ? "Menyambung…"
+                      : "Offline — tersimpan di laptop ini",
+                  );
+                else setSync("ok", "Tersinkron");
+                if (first) {
+                  first = false;
+                  ok(rows);
+                } else render();
+              },
+              (err) => {
+                setSync("off", "Gagal sinkron");
+                toast(
+                  "Gagal membaca Firebase: " + (err.code || err.message),
+                  7000,
+                );
+                if (first) {
+                  first = false;
+                  col = null;
+                  ok([]);
+                }
+              },
+            );
+          });
+        } catch (e) {
+          col = null;
+          setSync("off", "Firebase gagal dimuat");
+          toast(
+            "Firebase gagal dimuat (perlu internet saat pertama kali dibuka): " +
+              e.message,
+            7000,
           );
           return [];
         }
       }
-      async function dbPut(o) {
-        if (!db) {
-          if (!o.id) o.id = ++memId;
-          return o.id;
-        }
-        return req(store("readwrite").put(o));
-      }
       async function dbDel(id) {
-        if (db) await req(store("readwrite").delete(id));
+        if (col) F.deleteDoc(F.doc(col, id)).catch(wErr);
       }
       async function dbClear() {
-        if (db) await req(store("readwrite").clear());
+        if (!col) return;
+        const ids = rows.map((r) => r.id);
+        for (let i = 0; i < ids.length; i += 400) {
+          const b = F.writeBatch(col.firestore);
+          ids.slice(i, i + 400).forEach((id) => b.delete(F.doc(col, id)));
+          b.commit().catch(wErr);
+        }
       }
       async function save(r) {
         try {
-          r.id = await dbPut(r);
+          if (!col) {
+            if (!r.id) r.id = "m" + ++memId;
+            return true;
+          }
+          if (!r.id) r.id = F.doc(col).id; // ID dibuat di sisi klien, jadi aman walau offline
+          const { id, ...data } = r;
+          // tidak di-await: saat offline promise baru selesai setelah tersambung; data lokal langsung tersimpan
+          F.setDoc(F.doc(col, id), data, { merge: true }).catch(wErr);
           return true;
         } catch (e) {
           toast("Gagal menyimpan: " + e.message, 5000);
           return false;
         }
+      }
+      // Pindahkan data lama (IndexedDB di browser ini) ke Firestore, sekali saja
+      async function migrateLocal() {
+        if (!col || !indexedDB.databases) return;
+        try {
+          if (localStorage.getItem("reg-migrated")) return;
+        } catch (_) {}
+        let old = [];
+        try {
+          const dbs = await indexedDB.databases();
+          if (!dbs.some((d) => d.name === "registrasi-peserta")) return;
+          const odb = await new Promise((ok, no) => {
+            const r = indexedDB.open("registrasi-peserta");
+            r.onsuccess = () => ok(r.result);
+            r.onerror = () => no(r.error);
+          });
+          if (odb.objectStoreNames.contains("peserta"))
+            old = await req(
+              odb.transaction("peserta").objectStore("peserta").getAll(),
+            );
+          odb.close();
+        } catch (_) {
+          return;
+        }
+        if (!old.length) return;
+        if (
+          !(await ask(
+            "Data lama ditemukan",
+            `Ada <b>${old.length}</b> peserta tersimpan di browser ini (sebelum ada sinkronisasi). Unggah ke cloud? Lakukan di <b>satu laptop saja</b> agar tidak dobel.`,
+            "Ya, unggah",
+          ))
+        )
+          return;
+        for (const o of old) {
+          const r = { ...o };
+          delete r.id;
+          delete r.ttd;
+          await save(r);
+        }
+        try {
+          localStorage.setItem("reg-migrated", "1");
+        } catch (_) {}
+        toast(old.length + " peserta data lama diunggah.");
       }
 
       /* ================= util ================= */
@@ -1613,7 +1753,7 @@
         render();
         fx(true, DONE[f], r.nama);
       }
-      const byId = (id) => rows.find((r) => r.id === +id);
+      const byId = (id) => rows.find((r) => r.id === String(id));
       $("#tb").addEventListener("click", (e) => {
         const b = e.target.closest("[data-a]");
         if (!b) return;
@@ -2123,6 +2263,7 @@
           delete r.ttd;
         }); // fitur TTD sudah dihapus; buang sisa data lama dari memori
         render();
+        migrateLocal();
         if (
           "serviceWorker" in navigator &&
           location.protocol.startsWith("http")
