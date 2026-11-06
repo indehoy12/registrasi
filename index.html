@@ -860,6 +860,32 @@
           flex: none;
         }
       }
+      /* sat-set: tanpa animasi, notifikasi centang/silang singkat */
+      .fx {
+        transition: opacity 0.05s;
+      }
+      .fx .box,
+      .fx.show .box,
+      .fx.err.show .box {
+        animation: none !important;
+        transform: none !important;
+      }
+      .fx circle,
+      .fx path,
+      .fx.show circle,
+      .fx.show path {
+        animation: none !important;
+        stroke-dashoffset: 0 !important;
+      }
+      .fx svg {
+        width: 72px;
+        height: 72px;
+      }
+      .step.pop,
+      .step.bad.pop,
+      .step.pop svg {
+        animation: none !important;
+      }
       @media (prefers-reduced-motion: reduce) {
         .fx .box,
         .fx circle,
@@ -901,8 +927,9 @@
         <div>
           <h1>Registrasi Peserta</h1>
           <div class="sub" id="evName">
-            Data tersinkron otomatis antar laptop
-            <span class="sync wait" id="sync">Memuat…</span>
+            <span class="sync wait" id="sync" style="margin-left: 0"
+              >Memuat…</span
+            >
           </div>
         </div>
         <div class="row">
@@ -949,7 +976,7 @@
           <small>Belum hadir</small><b id="sB">0</b>
         </div>
         <div class="stat" style="--c: #f59e0b">
-          <small>Sudah check-in</small><b id="sC">0</b>
+          <small>Check-in (belum check-out)</small><b id="sC">0</b>
         </div>
         <div class="stat" style="--c: #0ea5e9">
           <small>Check-out 1 selesai</small><b id="sO">0</b>
@@ -968,7 +995,7 @@
         <input
           id="q"
           type="text"
-          placeholder="Cari nama / No KTP / No GoPay-OVO…  (Enter = check-in jika hasil 1)"
+          placeholder="Cari nama peserta…"
           autocomplete="off"
           autofocus />
         <button id="qx" title="Hapus (Esc)">✕</button>
@@ -980,7 +1007,7 @@
           ><button
             data-s="checkin"
             title="Sudah check-in, check-out 1 belum lengkap">
-            Sudah check-in</button
+            Check-in (belum check-out)</button
           ><button
             data-s="co1"
             title="Check-out 1 lengkap, Goodie Bag belum diambil">
@@ -1034,12 +1061,9 @@
         </div>
       </div>
       <div class="foot">
-        <kbd>Esc</kbd> hapus pencarian · <kbd>/</kbd> fokus ke kolom cari ·
-        <kbd>Enter</kbd> = check-in bila hasil tinggal satu (cocok untuk scanner
-        barcode/QR). Alur: <b>Check-in</b> (pilih ukuran → Jaket + T-Shirt; “-”
-        = tanpa jaket) → <b>Check-out 1</b> (Jaket kembali → Aktivasi Smartfren
-        + GoPay/OVO) → <b>Check-out 2</b> (Goodie Bag). Data hanya ada di
-        browser/laptop ini — lakukan <b>Data → Backup</b> secara berkala.
+        <b>Alur:</b> <b>Check-in</b> (pilih ukuran → Jaket + T-Shirt; “-” =
+        tanpa jaket) → <b>Check-out 1</b> (Jaket kembali → Aktivasi Smartfren +
+        GoPay/OVO) → <b>Check-out 2</b> (Goodie Bag).
       </div>
     </div>
 
@@ -1132,7 +1156,7 @@
       <div class="df" style="justify-content: space-between; flex-wrap: wrap">
         <div class="row">
           <button id="valEdit">Ubah nomor</button
-          ><button class="sm" id="valReset">Reset</button>
+          ><button class="sm" id="valReset">Reset validasi</button>
         </div>
         <div class="row">
           <button class="dng" id="valBad">✗ Tidak valid</button
@@ -1594,7 +1618,7 @@
         void el.offsetWidth;
         el.classList.add("show");
         clearTimeout(fxTm);
-        fxTm = setTimeout(() => el.classList.remove("show"), ok ? 1100 : 1800);
+        fxTm = setTimeout(() => el.classList.remove("show"), ok ? 450 : 1200);
       }
       let toTm;
       function toast(m, ms = 2200) {
@@ -2108,7 +2132,7 @@
             ? "Saat ini: VALID"
             : r.validasi === "gagal"
               ? "Saat ini: TIDAK VALID"
-              : "Pastikan nomor ini benar dan aktif."
+              : "Pastikan nomor ini terdaftar di GoPay atau OVO."
           : "Isi nomornya dulu lewat “Ubah nomor”.";
         $("#valOk").disabled = $("#valBad").disabled = !has;
         $("#valReset").style.display = r.validasi ? "" : "none";
