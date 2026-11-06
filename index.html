@@ -573,6 +573,26 @@
         border-radius: 12px;
         justify-content: center;
       }
+      .sizes button small {
+        display: block;
+        font-size: 0.72rem;
+        font-weight: 500;
+        color: var(--mut);
+      }
+      .sizes button.habis small {
+        color: var(--err);
+        font-weight: 700;
+      }
+      .sizes button.on small {
+        color: #fff;
+      }
+      #stok {
+        margin: -4px 0 12px;
+        font-size: 0.9rem;
+      }
+      #stok b.low {
+        color: var(--err);
+      }
       .sizes button.on {
         background: var(--pri);
         border-color: var(--pri);
@@ -986,6 +1006,7 @@
         </div>
       </div>
       <div class="bar"><i id="prog"></i></div>
+      <div class="sub" id="stok"></div>
 
       <div class="search">
         <svg viewBox="0 0 24 24">
@@ -1249,6 +1270,11 @@
     <script>
       "use strict";
       const SIZES = ["S", "M", "L", "XL", "XXL", "-"]; // "-" = peserta tidak mendapat jaket
+      // Stok jaket (ubah angka di sini kalau stok berubah). Ukuran tidak ada di sini = tidak dilacak.
+      const STOK_JAKET = { S: 1, M: 15, L: 24, XL: 9, XXL: 0 };
+      const jaketKeluar = (u) =>
+        rows.filter((r) => r.jaket_at && r.ukuran === u).length;
+      const sisaJaket = (u) => STOK_JAKET[u] - jaketKeluar(u);
       // urutan kolom: check-in (jaket, t-shirt) -> check-out 1 (jaket kembali, smartfren, gopay/ovo) -> check-out 2 (goodie bag)
       const STEPS = [
         ["jaket", "Jaket"],
@@ -1745,8 +1771,17 @@
             .map((r, i) => rowHtml(r, off + i, ts))
             .join("");
         last = null;
+        $("#stok").innerHTML =
+          "Sisa jaket: " +
+          Object.keys(STOK_JAKET)
+            .filter((u) => STOK_JAKET[u] > 0)
+            .map((u) => {
+              const n = sisaJaket(u);
+              return `${u} <b${n <= 2 ? ' class="low"' : ""}>${n}</b>`;
+            })
+            .join(" · ");
         $("#info").textContent =
-          `${all.length} dari ${rows.length} peserta · jaket belum kembali: ${rows.filter((r) => r.jaket_at && !r.jaketback_at).length}`;
+          `${all.length} dari ${rows.length} peserta · jaket sudah kembali: ${rows.filter((r) => r.jaket_at && r.jaketback_at).length} · belum kembali: ${rows.filter((r) => r.jaket_at && !r.jaketback_at).length}`;
         // pagination (disembunyikan bila data muat dalam satu halaman terkecil)
         $("#pager").style.display = all.length > 25 ? "flex" : "none";
         $("#pInfo").textContent = `Hal. ${state.page} dari ${pages}`;
@@ -2034,13 +2069,22 @@
       SIZES.forEach((s, i) =>
         inSizes.insertAdjacentHTML(
           "beforeend",
-          `<button type="button" data-s="${s}">${s}</button>`,
+          `<button type="button" data-s="${s}">${s}<small></small></button>`,
         ),
       );
       const paintSizes = () =>
-        inSizes
-          .querySelectorAll("button")
-          .forEach((b) => b.classList.toggle("on", b.dataset.s === inSize));
+        inSizes.querySelectorAll("button").forEach((b) => {
+          const u = b.dataset.s;
+          b.classList.toggle("on", u === inSize);
+          const tracked = u in STOK_JAKET,
+            sisa = tracked ? sisaJaket(u) : 0;
+          b.classList.toggle("habis", tracked && sisa <= 0);
+          b.querySelector("small").textContent = tracked
+            ? sisa > 0
+              ? "sisa " + sisa
+              : "habis"
+            : "";
+        });
       function pickSize(s) {
         inSize = s;
         paintSizes();
@@ -2087,6 +2131,20 @@
           return err(
             "Jaket sudah tercatat diterima — batalkan centang Jaket dulu.",
           );
+        if (
+          inSize in STOK_JAKET &&
+          sisaJaket(inSize) <= 0 &&
+          !(r.jaket_at && r.ukuran === inSize)
+        ) {
+          if (
+            !(await ask(
+              "Stok jaket " + inSize + " habis",
+              `Stok jaket ukuran <b>${inSize}</b> sudah habis. Tetap lanjut check-in?`,
+              "Tetap lanjut",
+            ))
+          )
+            return;
+        }
         const was = isIn(r),
           old = { ...r },
           now = Date.now(),
